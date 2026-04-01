@@ -68,13 +68,13 @@ fn test_spv_client(
         log::trace!("process {} headers at one time", headers.len());
         let update = if headers_group_size % 5 == 0 {
             let tmp_headers = mem::take(&mut headers);
-            let _update = service.update(tmp_headers.clone()).unwrap();
+            let _update = service.update(tmp_headers.clone(), 0).unwrap();
             log::trace!("rollback to previous client (for test): {old_client}");
             service.rollback_to(old_client.unpack()).unwrap();
             log::trace!("process {} headers again", headers.len());
-            service.update(tmp_headers)
+            service.update(tmp_headers, 0)
         } else {
-            service.update(mem::take(&mut headers))
+            service.update(mem::take(&mut headers), 0)
         }
         .unwrap();
         if verify_tx_range.0 <= height + 1 && height <= verify_tx_range.1 {
