@@ -94,6 +94,7 @@ pub struct SpvTypeArgs {
     ///   - 0b00 for mainnet
     ///   - 0b10 for testnet
     ///   - 0b01 for signet
+    ///   - 0b11 for testnet4
     /// - Other bits are reserved for future use.
     pub flags: u8,
 }
@@ -125,6 +126,7 @@ pub enum BitcoinChainType {
     Mainnet,
     Testnet,
     Signet,
+    Testnet4,
     Other, // For future use.
 }
 
@@ -134,6 +136,7 @@ impl From<u8> for BitcoinChainType {
             FLAG_CHAIN_TYPE_MAINNET => BitcoinChainType::Mainnet,
             FLAG_CHAIN_TYPE_TESTNET => BitcoinChainType::Testnet,
             FLAG_CHAIN_TYPE_SIGNET => BitcoinChainType::Signet,
+            FLAG_CHAIN_TYPE_TESTNET4 => BitcoinChainType::Testnet4,
             _ => BitcoinChainType::Other,
         }
     }
