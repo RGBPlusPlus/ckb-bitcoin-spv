@@ -1,9 +1,107 @@
 use std::{format, fs::File, io::Read as _, mem};
 
-use bitcoin::consensus::serialize;
-use ckb_bitcoin_spv_verifier::types::{core, packed, prelude::*};
+use bitcoin::{
+    absolute::LockTime,
+    consensus::serialize,
+    hashes::Hash as _,
+    merkle_tree::{MerkleBlock, PartialMerkleTree},
+    TxMerkleNode,
+};
+use ckb_bitcoin_spv_verifier::{
+    error::VerifyTxError,
+    types::{core, packed, prelude::*},
+};
 
 use crate::{tests, utilities, BlockProofGenerator, DummyService};
+
+fn assert_invalid_header_proof<T>(result: Result<T, VerifyTxError>) {
+    assert_eq!(
+        result.map(|_| ()).map_err(|err| err as i8),
+        Err(VerifyTxError::HeaderMmrProof as i8),
+    );
+}
+
+/// Every part of a transaction proof has to hold up on its own.
+///
+/// Starting from a genuine proof, tampers with one part at a time and expects the
+/// header check to catch it.
+fn assert_tampered_proofs_are_rejected(
+    client: &packed::SpvClient,
+    tx_proof: &packed::TransactionProof,
+    real_block: &MerkleBlock,
+    real_tx: &core::Transaction,
+    height: u32,
+    max_height: u32,
+) {
+    // A block that was never mined: the merkle proof is consistent with the made-up
+    // header, and the MMR proof is a genuine one for that height.
+    {
+        let mut tx = real_tx.clone();
+        tx.lock_time = LockTime::from_consensus(tx.lock_time.to_consensus_u32() ^ 1);
+        let txid = tx.txid();
+
+        let mut header = real_block.header;
+        header.merkle_root = TxMerkleNode::from_raw_hash(txid.to_raw_hash());
+        let block = MerkleBlock {
+            header,
+            txn: PartialMerkleTree::from_txids(&[txid], &[true]),
+        };
+        let forged = tx_proof
+            .clone()
+            .as_builder()
+            .tx_index(0u32.pack())
+            .transaction_proof(core::Bytes::from(serialize(&block)).pack())
+            .build();
+
+        assert_invalid_header_proof(client.verify_transaction(
+            txid.as_ref(),
+            forged.as_reader(),
+            0,
+        ));
+        assert_invalid_header_proof(client.verify_transaction_data(
+            &serialize(&tx),
+            forged.as_reader(),
+            0,
+        ));
+    }
+
+    let real_txid = real_tx.txid();
+
+    // A genuine block with a corrupted MMR proof.
+    if let Some(item) = tx_proof.header_proof().get(0) {
+        let corrupted = item
+            .clone()
+            .as_builder()
+            .children_hash(core::Hash::hash(item.as_slice()).pack())
+            .build();
+        let mut items = tx_proof.header_proof().into_iter().collect::<Vec<_>>();
+        items[0] = corrupted;
+        let forged = tx_proof
+            .clone()
+            .as_builder()
+            .header_proof(packed::MmrProof::new_builder().set(items).build())
+            .build();
+        assert_invalid_header_proof(client.verify_transaction(
+            real_txid.as_ref(),
+            forged.as_reader(),
+            0,
+        ));
+    }
+
+    // A genuine block claimed to be at another height.
+    if height < max_height {
+        let forged = tx_proof
+            .clone()
+            .as_builder()
+            .height((height + 1).pack())
+            .build();
+        assert_invalid_header_proof(client.verify_transaction(
+            real_txid.as_ref(),
+            forged.as_reader(),
+            0,
+        ));
+    }
+}
 
 fn test_spv_client(
     case_headers: &str,
@@ -104,7 +202,7 @@ fn test_spv_client(
                         file.read_to_end(&mut data).map(|_| data)
                     })
                     .unwrap();
-                let _: core::MerkleBlock =
+                let real_block: core::MerkleBlock =
                     utilities::decode_from_slice(&actual).expect("check binary data");
 
                 let file_stem = bin_file.file_stem().unwrap().to_str().unwrap();
@@ -154,6 +252,14 @@ fn test_spv_client(
                     .map_err(|err| err as i8);
                 if height <= max_height {
                     assert!(verify_result.is_ok());
+                    assert_tampered_proofs_are_rejected(
+                        &tip_client,
+                        &tx_proof,
+                        &real_block,
+                        tx,
+                        height,
+                        max_height,
+                    );
                 } else {
                     assert!(verify_result.is_err());
                 }
