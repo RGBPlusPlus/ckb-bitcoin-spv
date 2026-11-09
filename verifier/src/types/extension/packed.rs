@@ -379,9 +379,13 @@ impl packed::SpvClient {
                 let digest = core::HeaderDigest::new_leaf(height, &header).pack();
                 vec![(position, digest)]
             };
-            proof
+            let result = proof
                 .verify(self.headers_mmr_root(), digests_with_positions)
                 .map_err(|_| VerifyTxError::HeaderMmrProof)?;
+            if !result {
+                warn!("failed: verify MMR proof for header-{height}, root: {block_hash:#x}");
+                return Err(VerifyTxError::HeaderMmrProof);
+            }
         }
 
         Ok(header)
