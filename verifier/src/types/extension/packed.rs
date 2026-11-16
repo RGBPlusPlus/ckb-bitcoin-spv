@@ -149,10 +149,26 @@ impl packed::SpvClient {
                     );
                 });
 
-                // For mainnet and signet, `header.bits` should be as the same as `new_info.1`.
-                // But for testnet, it could be not.
-                if core::BitcoinChainType::Testnet != flags.into() {
-                    return Err(UpdateError::Difficulty);
+                match flags.into() {
+                    // https://github.com/bitcoin/bips/blob/master/bip-0094.mediawiki#1-20-minute-exception-rule
+                    // Testnet3 & Testnet4
+                    // 1. For any block except the first block in a difficulty period:
+                    //    a. If the block's timestamp is >20 minutes past the timestamp of the previous block
+                    //    b. Then the block MUST use the minimum difficulty value 0x1d00ffff, regardless of the network's actual difficulty
+                    // 2. The first block of each difficulty period MUST use the actual network difficulty.
+                    core::BitcoinChainType::Testnet | core::BitcoinChainType::Testnet4 => {
+                        let is_first_of_period = new_max_height % DIFFCHANGE_INTERVAL == 0;
+                        let min_bits = core::CompactTarget::from_consensus(
+                            crate::constants::TESTNET_MIN_DIFFICULTY_BITS,
+                        );
+                        if is_first_of_period || header.bits != min_bits {
+                            return Err(UpdateError::Difficulty);
+                        }
+                    }
+                    // For mainnet and signet, `header.bits` should be as the same as `new_info.1`.
+                    _ => {
+                        return Err(UpdateError::Difficulty);
+                    }
                 }
             }
             // Check POW.
@@ -166,10 +182,17 @@ impl packed::SpvClient {
                 match (new_max_height + 1) % DIFFCHANGE_INTERVAL {
                     // Next block is the first block for a new difficulty.
                     0 => {
-                        // See the above check:
-                        // - For mainnet, `header.bits` should be as the same as `new_info.1`.
-                        // - But for testnet, it could be not.
-                        let prev_target = header.bits.into();
+                        // https://github.com/bitcoin/bips/blob/master/bip-0094.mediawiki#2-block-storm-fix
+                        // For Testnet4 (BIP 94):
+                        // 1. For difficulty adjustment calculations between periods:
+                        //    a. The base difficulty value MUST be taken from the first block of the previous difficulty period (new_info.1)
+                        //    b. NOT from the last block as in previous implementations to prevent block storms from 20-minute exception.
+                        // 2. The adjustment factor calculation remains unchanged.
+                        let prev_target = if core::BitcoinChainType::Testnet4 == flags.into() {
+                            new_info.1.into()
+                        } else {
+                            header.bits.into()
+                        };
                         let next_target =
                             calculate_next_target(prev_target, new_info.0, header.time, flags);
                         new_info.1 = next_target.to_compact_lossy();

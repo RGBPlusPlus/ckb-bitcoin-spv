@@ -4,7 +4,11 @@ use std::collections::HashMap;
 
 use bitcoin::blockdata::constants::DIFFCHANGE_INTERVAL;
 use ckb_bitcoin_spv_verifier::{
-    types::{core, packed, prelude::*},
+    types::{
+        core::{self, BitcoinChainType},
+        packed,
+        prelude::*,
+    },
     utilities::{bitcoin::calculate_next_target, mmr},
 };
 
@@ -51,7 +55,7 @@ impl DummyService {
         })
     }
 
-    pub fn update(&mut self, headers: Vec<core::Header>) -> Result<packed::SpvUpdate> {
+    pub fn update(&mut self, headers: Vec<core::Header>, flags: u8) -> Result<packed::SpvUpdate> {
         let mut mmr = {
             let last_index =
                 self.client.headers_mmr_root.max_height - self.client.headers_mmr_root.min_height;
@@ -78,14 +82,27 @@ impl DummyService {
 
             match (height + 1) % DIFFCHANGE_INTERVAL {
                 0 => {
-                    let curr_target: core::Target = header.bits.into();
+                    // For Testnet4 (BIP 94 block storm fix):
+                    // Use the first block's difficulty as the baseline,
+                    // NOT the last block's difficulty.
+                    let prev_target: core::Target =
+                        if BitcoinChainType::Testnet4 == flags.into() {
+                            self.client
+                                .target_adjust_info
+                                .decode()
+                                .expect("decode target adjust info")
+                                .1
+                                .into()
+                        } else {
+                            header.bits.into()
+                        };
                     log::trace!(
-                        ">>> height {height:07}, time: {}, target {curr_target:#x}",
+                        ">>> height {height:07}, time: {}, target {prev_target:#x}",
                         header.time
                     );
                     let start_time: u32 = self.client.target_adjust_info.start_time().unpack();
                     let next_target =
-                        calculate_next_target(curr_target, start_time, header.time, 0);
+                        calculate_next_target(prev_target, start_time, header.time, flags);
                     log::info!(">>> calculated new target  {next_target:#x}");
                     let next_bits = next_target.to_compact_lossy();
                     let next_target: core::Target = next_bits.into();
